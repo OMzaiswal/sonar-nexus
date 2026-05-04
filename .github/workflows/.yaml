@@ -1,0 +1,61 @@
+name: MERN Production Pipeline
+
+on:
+  push:
+    branches: [ "main" ]  # Pipeline runs only when code is pushed to main
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      # --- STEP 1: GET THE CODE ---
+      - name: Checkout Code
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0  # Necessary for better SonarQube analysis
+
+      # --- STEP 2: THE INSPECTOR (SONARQUBE) ---
+      - name: SonarQube Code Analysis
+        uses: sonarsource/sonarqube-scan-action@master
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+        # This step sends the code to your EC2 SonarQube to check for bugs
+
+      # --- STEP 3: THE COOKING (DOCKER BUILD) ---
+      - name: Build Docker Image
+        run: docker build -t my-mern-app:latest .
+
+      # --- STEP 4: THE WAREHOUSE LOGIN (NEXUS) ---
+      - name: Login to Nexus Warehouse
+        run: |
+          echo "${{ secrets.NEXUS_PASSWORD }}" | docker login ${{ secrets.EC2_HOST }}:8082 -u admin --password-stdin
+
+      # --- STEP 5: STORE IN WAREHOUSE (NEXUS PUSH) ---
+      - name: Tag and Push to Nexus
+        run: |
+          # We give it a version tag and push it through the 'Side Door' (8082)
+          docker tag my-mern-app:latest ${{ secrets.EC2_HOST }}:8082/my-mern-app:latest
+          docker push ${{ secrets.EC2_HOST }}:8082/my-mern-app:latest
+
+      # --- STEP 6: THE DELIVERY (DEPLOY TO EC2) ---
+      - name: Deploy to EC2 via SSH
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ubuntu
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            # 1. Log in to Nexus inside the EC2
+            echo "${{ secrets.NEXUS_PASSWORD }}" | docker login ${{ secrets.EC2_HOST }}:8082 -u admin --password-stdin
+            
+            # 2. Pull the clean, inspected image from the warehouse
+            docker pull ${{ secrets.EC2_HOST }}:8082/my-mern-app:latest
+            
+            # 3. Stop and remove the old version if it's running
+            docker stop mern-app-container || true
+            docker rm mern-app-container || true
+            
+            # 4. Run the new version on port 5000
+            docker run -d -p 5000:5000 --name mern-app-container ${{ secrets.EC2_HOST }}:8082/my-mern-app:latest
