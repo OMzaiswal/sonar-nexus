@@ -15,7 +15,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      # --- STEP 2: WAIT FOR SONARQUBE (IMPORTANT FIX) ---
+      # --- STEP 2: CHECK SONARQUBE ---
       - name: Check SonarQube Availability
         run: |
           curl -f ${{ secrets.SONAR_HOST_URL }}/api/system/status || exit 1
@@ -27,28 +27,22 @@ jobs:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
 
-      # --- STEP 4: BUILD DOCKER IMAGE ---
+      # --- STEP 4: BUILD IMAGE ---
       - name: Build Docker Image
         run: docker build -t my-mern-app:latest .
 
-      # --- STEP 5: FIX DOCKER HTTP REGISTRY ISSUE ---
-      - name: Configure Docker for Nexus (HTTP Fix)
-        run: |
-          echo '{ "insecure-registries": ["${{ secrets.EC2_HOST }}:8082"] }' | sudo tee /etc/docker/daemon.json
-          sudo systemctl restart docker
-
-      # --- STEP 6: LOGIN TO NEXUS ---
+      # --- STEP 5: LOGIN TO NEXUS ---
       - name: Login to Nexus
         run: |
           echo "${{ secrets.NEXUS_PASSWORD }}" | docker login http://${{ secrets.EC2_HOST }}:8082 -u admin --password-stdin
 
-      # --- STEP 7: TAG & PUSH IMAGE ---
+      # --- STEP 6: PUSH IMAGE ---
       - name: Tag and Push to Nexus
         run: |
           docker tag my-mern-app:latest ${{ secrets.EC2_HOST }}:8082/my-mern-app:latest
           docker push ${{ secrets.EC2_HOST }}:8082/my-mern-app:latest
 
-      # --- STEP 8: DEPLOY TO EC2 ---
+      # --- STEP 7: DEPLOY ---
       - name: Deploy to EC2 via SSH
         uses: appleboy/ssh-action@master
         with:
@@ -56,19 +50,20 @@ jobs:
           username: ubuntu
           key: ${{ secrets.EC2_SSH_KEY }}
           script: |
-            # Fix Docker HTTP issue on EC2 as well
-            echo '{ "insecure-registries": ["${{ secrets.EC2_HOST }}:8082"] }' | sudo tee /etc/docker/daemon.json
-            sudo systemctl restart docker
+            # Ensure Nexus is running
+            if ! docker ps | grep nexus; then
+              docker start nexus || echo "Nexus not found"
+            fi
 
-            # Login to Nexus
-            echo "${{ secrets.NEXUS_PASSWORD }}" | docker login http://${{ secrets.EC2_HOST }}:8082 -u admin --password-stdin
+            # Login to Nexus (LOCAL)
+            echo "${{ secrets.NEXUS_PASSWORD }}" | docker login http://localhost:8082 -u admin --password-stdin
 
             # Pull latest image
-            docker pull ${{ secrets.EC2_HOST }}:8082/my-mern-app:latest
+            docker pull localhost:8082/my-mern-app:latest
 
             # Stop old container
             docker stop mern-app-container || true
             docker rm mern-app-container || true
 
             # Run new container
-            docker run -d -p 3000:3000 --name mern-app-container ${{ secrets.EC2_HOST }}:8082/my-mern-app:latest
+            docker run -d -p 3000:3000 --name mern-app-container localhost:8082/my-mern-app:latest
