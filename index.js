@@ -6,7 +6,7 @@ app.disable("x-powered-by");
 
 
 app.get('/', (req, res) => {
-    res.json({ message: "Hello from backend server..."});
+    res.json({ message: "Hello from backend server...."});
 })
 
 app.listen(3000, () => {
